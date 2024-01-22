@@ -5,6 +5,7 @@ import triton
 import triton.language as tl
 
 from k_activations import relu, squared_relu, silu
+from utils import ACT2FN
 
 
 @triton.jit
@@ -828,7 +829,7 @@ def mistral_mlp_sparse(x, Wgate, Wup, Wdownt, idx, activation="relu"):
     x = gather_transposed_gemv(x, Wdownt, idx)
     return x
 
-def mistral_mlp_sparse_nofuse(x, Wgate, Wup, Wdownt, idx, activation="relu"):
+def mistral_mlp_sparse_fuse(x, Wgate, Wup, Wdownt, idx, activation="relu"):
     """
     x: (batch, d)
     Wgate: (3.5d, d)
@@ -837,5 +838,26 @@ def mistral_mlp_sparse_nofuse(x, Wgate, Wup, Wdownt, idx, activation="relu"):
     idx: (M)
     """
     x = gather_gemv2(x, Wgate, Wup, idx, activation=activation)
+    x = gather_transposed_gemv(x, Wdownt, idx)
+    return x
+
+def mistral_mlp_pred_sparse(x, Wu, Wsv, Bsv, svd_activation, Wgate, Wup, Wdownt, activation, K):
+    """
+    x: (batch, d)
+    Wu: (d, r)
+    Wsv: (r, 3.5d)
+    Bsv: (3.5d)
+    Wgate: (3.5d, d)
+    Wup: (3.5d, d)
+    Wdownt: (3.5d, d)
+    idx: (M)
+    """
+    svd_act_fn = ACT2FN[svd_activation]
+    probs = svd_act_fn(torch.matmul(torch.matmul(x, Wu),Wsv) + Bsv)[0]
+    _, topk_idcs = torch.topk(probs, k=K, dim=-1)
+    idx, _ = torch.sort(topk_idcs)
+    x1 = gather_gemv(x, Wgate, idx, activation=activation)
+    x2 = gather_gemv(x, Wup, idx)
+    x = x1 * x2
     x = gather_transposed_gemv(x, Wdownt, idx)
     return x
